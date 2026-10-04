@@ -93,15 +93,11 @@ class EversolarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config_entry: config_entries.ConfigEntry,
     ) -> "EversolarOptionsFlow":
         """Get the options flow for this config entry."""
-        return EversolarOptionsFlow(config_entry)
+        return EversolarOptionsFlow()
 
 
 class EversolarOptionsFlow(config_entries.OptionsFlow):
     """Handle options for Eversolar PMU."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
 
     async def async_step_init(
         self, user_input: Optional[Dict[str, Any]] = None
