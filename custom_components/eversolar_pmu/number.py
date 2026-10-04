@@ -4,16 +4,16 @@
 
 """Number platform for Eversolar PMU."""
 import logging
-from typing import Any, Optional
+from typing import Optional
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_PV_VOLTAGE_STATS_CUTOFF, DOMAIN
 from .coordinator import EversolarDataUpdateCoordinator
+from .entity import EversolarEntity
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,18 +25,30 @@ async def async_setup_entry(
 ) -> None:
     """Set up number platform from a config entry."""
     coordinator: EversolarDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    known: set[str] = set()
 
-    entities = [
-        EversolarPVVoltageStatsCutoffNumber(hass, coordinator, entry),
-    ]
+    @callback
+    def _add_new_inverters() -> None:
+        """Add entities for inverters not seen before (also handles late arrivals)."""
+        new_ids = [i for i in coordinator.inverter_ids if i not in known]
+        if not new_ids:
+            return
+        known.update(new_ids)
+        async_add_entities(
+            [EversolarPVVoltageStatsCutoffNumber(hass, coordinator, entry, i) for i in new_ids]
+        )
 
-    async_add_entities(entities)
+    _add_new_inverters()
+    entry.async_on_unload(coordinator.async_add_listener(_add_new_inverters))
 
 
-class EversolarPVVoltageStatsCutoffNumber(CoordinatorEntity, NumberEntity):
-    """PV Voltage Stats Cutoff number entity."""
+class EversolarPVVoltageStatsCutoffNumber(EversolarEntity, NumberEntity):
+    """PV Voltage Stats Cutoff number entity.
 
-    _attr_has_entity_name = True
+    The cutoff is one option shared by all inverters on the PMU, so every
+    inverter's entity reads and writes the same value.
+    """
+
     _attr_name = "PV Voltage Stats Cutoff"
     _attr_mode = NumberMode.BOX
     _attr_native_min_value = 1
@@ -49,19 +61,12 @@ class EversolarPVVoltageStatsCutoffNumber(CoordinatorEntity, NumberEntity):
         hass: HomeAssistant,
         coordinator: EversolarDataUpdateCoordinator,
         entry: ConfigEntry,
+        inverter_id: str,
     ) -> None:
         """Initialize number entity."""
-        super().__init__(coordinator)
+        super().__init__(coordinator, inverter_id, "pv_voltage_stats_cutoff")
         self.hass = hass
-        self.coordinator = coordinator
         self.config_entry = entry
-
-    @property
-    def unique_id(self) -> str:
-        """Return a unique ID."""
-        if self.coordinator.inverter_id:
-            return f"{DOMAIN}_{self.coordinator.inverter_id}_pv_voltage_stats_cutoff"
-        return f"{DOMAIN}_{self.coordinator.config_entry.entry_id}_pv_voltage_stats_cutoff"
 
     @property
     def native_value(self) -> Optional[float]:
@@ -82,13 +87,3 @@ class EversolarPVVoltageStatsCutoffNumber(CoordinatorEntity, NumberEntity):
 
         # Update UI state
         self.async_write_ha_state()
-
-    @property
-    def device_info(self) -> dict:
-        """Return device info."""
-        return {
-            "identifiers": {(DOMAIN, self.coordinator.inverter_id or self.coordinator.config_entry.entry_id)},
-            "name": f"Eversolar Inverter {self.coordinator.inverter_id or 'Unknown'}",
-            "manufacturer": "Eversolar",
-            "model": "PMU (TCP/IP)",
-        }

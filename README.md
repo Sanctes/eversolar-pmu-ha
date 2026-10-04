@@ -16,7 +16,8 @@ Repository: `https://github.com/aburow/eversolar-pmu-ha`
 - Local polling over TCP/IP (no cloud)
 - HACS compatible (`hacs.json` present)
 - Config flow + options flow
-- 14 sensor entities, 2 binary sensors, and 1 number entity
+- One device per inverter, including PMUs with several inverters on one RS485 bus
+- Per inverter: 14 sensor entities, 2 binary sensors, and 1 number entity
 - No external Python dependencies
 
 ## Architecture
@@ -195,13 +196,33 @@ Example keys include: `power`, `ac_voltage`, `ac_frequency`, `energy_today`, `to
 
 ## Multiple inverters
 
-You can add multiple instances:
+### Several inverters behind one PMU
+
+A PMU that talks to several inverters over RS485 needs only one entry. On each
+poll the integration asks the PMU for its inverters in turn (index 0, 1, 2 ...
+until the PMU returns an empty list), then reads every inverter reported. Each
+inverter becomes its own device, identified by its inverter ID, with the full
+entity set. Inverters that appear later (for example after waking up in the
+morning) get their devices added without a restart.
+
+Notes:
+
+- Entity unique IDs and device identifiers are unchanged, so an existing
+  single-inverter setup keeps its entities and history.
+- `Time Sync` is PMU-wide, so each inverter shows the same state.
+- `PV Voltage Stats Cutoff` is one option for the whole PMU; each inverter's
+  number entity reads and writes that same value.
+- If an inverter is not reported in a poll, only that inverter's entities become
+  unavailable. If the PMU reports no inverters at all (for example when the inverters are offline),
+  all entities are unavailable, as before.
+
+### Several PMUs
+
+You can also add multiple instances, one per PMU:
 
 1. Settings → Devices & Services → Add Integration
 2. Search for “Eversolar PMU”
-3. Enter a different inverter host/IP
-
-Each instance creates its own device and entities.
+3. Enter a different PMU host/IP
 
 ## Support
 

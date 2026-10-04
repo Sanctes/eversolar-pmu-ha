@@ -11,12 +11,12 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_PV_VOLTAGE_THRESHOLD, DOMAIN
+from .const import DOMAIN
 from .coordinator import EversolarDataUpdateCoordinator
+from .entity import EversolarEntity
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,67 +28,57 @@ async def async_setup_entry(
 ) -> None:
     """Set up binary sensor platform from a config entry."""
     coordinator: EversolarDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    known: set[str] = set()
 
-    entities = [
-        EversolarACDCOfflineSensor(coordinator),
-        EversolarTimeSyncSensor(coordinator),
-    ]
+    @callback
+    def _add_new_inverters() -> None:
+        """Add entities for inverters not seen before (also handles late arrivals)."""
+        new_ids = [i for i in coordinator.inverter_ids if i not in known]
+        if not new_ids:
+            return
+        known.update(new_ids)
+        async_add_entities(
+            [
+                entity
+                for i in new_ids
+                for entity in (
+                    EversolarACDCOfflineSensor(coordinator, i),
+                    EversolarTimeSyncSensor(coordinator, i),
+                )
+            ]
+        )
 
-    async_add_entities(entities)
+    _add_new_inverters()
+    entry.async_on_unload(coordinator.async_add_listener(_add_new_inverters))
 
 
-class EversolarACDCOfflineSensor(CoordinatorEntity, BinarySensorEntity):
+class EversolarACDCOfflineSensor(EversolarEntity, BinarySensorEntity):
     """DC Online binary sensor."""
 
-    _attr_has_entity_name = True
     _attr_device_class = BinarySensorDeviceClass.RUNNING
+    _attr_name = "DC Online"
 
-    def __init__(self, coordinator: EversolarDataUpdateCoordinator) -> None:
+    def __init__(self, coordinator: EversolarDataUpdateCoordinator, inverter_id: str) -> None:
         """Initialize sensor."""
-        super().__init__(coordinator)
-        self._attr_name = "DC Online"
-
-    @property
-    def unique_id(self) -> str:
-        """Return a unique ID."""
-        if self.coordinator.inverter_id:
-            return f"{DOMAIN}_{self.coordinator.inverter_id}_dc_online"
-        return f"{DOMAIN}_{self.coordinator.config_entry.entry_id}_dc_online"
+        super().__init__(coordinator, inverter_id, "dc_online")
 
     @property
     def is_on(self) -> Optional[bool]:
         """Return True if DC is online (inverter not fully down)."""
-        if self.coordinator.is_fully_down is not None:
-            return not self.coordinator.is_fully_down
-        return None
-
-    @property
-    def device_info(self) -> dict:
-        """Return device info."""
-        return {
-            "identifiers": {(DOMAIN, self.coordinator.inverter_id or self.coordinator.config_entry.entry_id)},
-            "name": f"Eversolar Inverter {self.coordinator.inverter_id or 'Unknown'}",
-            "manufacturer": "Eversolar",
-            "model": "PMU (TCP/IP)",
-        }
+        return not self.coordinator.is_fully_down(self._inverter_id)
 
 
-class EversolarTimeSyncSensor(CoordinatorEntity, BinarySensorEntity):
-    """Time Sync binary sensor."""
+class EversolarTimeSyncSensor(EversolarEntity, BinarySensorEntity):
+    """Time Sync binary sensor.
 
-    _attr_has_entity_name = True
+    Time sync is a PMU-wide operation, so every inverter reports the same state.
+    """
 
-    def __init__(self, coordinator: EversolarDataUpdateCoordinator) -> None:
+    _attr_name = "Time Sync"
+
+    def __init__(self, coordinator: EversolarDataUpdateCoordinator, inverter_id: str) -> None:
         """Initialize sensor."""
-        super().__init__(coordinator)
-        self._attr_name = "Time Sync"
-
-    @property
-    def unique_id(self) -> str:
-        """Return a unique ID."""
-        if self.coordinator.inverter_id:
-            return f"{DOMAIN}_{self.coordinator.inverter_id}_time_sync"
-        return f"{DOMAIN}_{self.coordinator.config_entry.entry_id}_time_sync"
+        super().__init__(coordinator, inverter_id, "time_sync")
 
     @property
     def available(self) -> bool:
@@ -96,7 +86,7 @@ class EversolarTimeSyncSensor(CoordinatorEntity, BinarySensorEntity):
         if not super().available:
             return False
         # Unavailable when both AC and DC are down (fully down)
-        if self.coordinator.is_fully_down:
+        if self.coordinator.is_fully_down(self._inverter_id):
             return False
         return True
 
@@ -104,13 +94,3 @@ class EversolarTimeSyncSensor(CoordinatorEntity, BinarySensorEntity):
     def is_on(self) -> bool:
         """Return True if time sync was successful."""
         return self.coordinator.time_sync_success
-
-    @property
-    def device_info(self) -> dict:
-        """Return device info."""
-        return {
-            "identifiers": {(DOMAIN, self.coordinator.inverter_id or self.coordinator.config_entry.entry_id)},
-            "name": f"Eversolar Inverter {self.coordinator.inverter_id or 'Unknown'}",
-            "manufacturer": "Eversolar",
-            "model": "PMU (TCP/IP)",
-        }

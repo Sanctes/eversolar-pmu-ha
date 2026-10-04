@@ -28,7 +28,11 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class EversolarDataUpdateCoordinator(DataUpdateCoordinator):
-    """Coordinate Eversolar PMU data updates."""
+    """Coordinate Eversolar PMU data updates.
+
+    One PMU can report several inverters. ``self.data`` is a dict keyed by
+    inverter ID, each value being that inverter's readings.
+    """
 
     def __init__(self, hass: HomeAssistant, entry) -> None:
         """Initialize coordinator."""
@@ -38,17 +42,18 @@ class EversolarDataUpdateCoordinator(DataUpdateCoordinator):
             timeout=entry.data.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
         )
         self.config_entry = entry
-        self.inverter_id = None
+        self.inverter_ids: list[str] = []
 
-        # State tracking variables
-        self._last_mode: int | None = None
+        # PMU-wide state tracking
         self._synced_today: bool = False
         self._last_sync_date: date | None = None
-        self._is_fully_down: bool = False
-        self._ac_online_time: datetime | None = None
-        self._ac_offline_time: datetime | None = None
         self._was_connected: bool = False
         self._time_sync_success: bool = False
+
+        # Per-inverter state tracking, keyed by inverter ID
+        self._last_mode: dict[str, int | None] = {}
+        self._ac_online_time: dict[str, datetime] = {}
+        self._ac_offline_time: dict[str, datetime] = {}
 
         update_interval = timedelta(
             seconds=entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
@@ -65,22 +70,28 @@ class EversolarDataUpdateCoordinator(DataUpdateCoordinator):
         """Get config value from options first, then data, then default."""
         return self.config_entry.options.get(key) or self.config_entry.data.get(key, default)
 
-    @property
-    def is_fully_down(self) -> bool:
-        """Check if inverter is fully down (Wait mode + low PV voltage)."""
+    def inverter_data(self, inverter_id: str) -> dict | None:
+        """Return the latest readings for one inverter, if it was reported."""
         if not self.data:
+            return None
+        return self.data.get(inverter_id)
+
+    def is_fully_down(self, inverter_id: str) -> bool:
+        """Check if an inverter is fully down (Wait mode + low PV voltage)."""
+        data = self.inverter_data(inverter_id)
+        if not data:
             return False
-        mode = self.data.get("mode")
-        pv_voltage = self.data.get("pv_v", 0) or 0
+        mode = data.get("mode")
+        pv_voltage = data.get("pv_v", 0) or 0
         threshold = self._get_config(CONF_PV_VOLTAGE_THRESHOLD, 50)
         return mode == 0x0000 and pv_voltage < threshold
 
-    @property
-    def is_below_stats_cutoff(self) -> bool:
-        """Check if PV voltage is below stats cutoff."""
-        if not self.data:
+    def is_below_stats_cutoff(self, inverter_id: str) -> bool:
+        """Check if an inverter's PV voltage is below the stats cutoff."""
+        data = self.inverter_data(inverter_id)
+        if not data:
             return False
-        pv_voltage = self.data.get("pv_v", 0) or 0
+        pv_voltage = data.get("pv_v", 0) or 0
         stats_cutoff = self._get_config(CONF_PV_VOLTAGE_STATS_CUTOFF, 20)
         return pv_voltage < stats_cutoff
 
@@ -89,19 +100,47 @@ class EversolarDataUpdateCoordinator(DataUpdateCoordinator):
         """Return True if time sync was successful."""
         return self._time_sync_success
 
+    def _track_ac_transitions(self, inverter_id: str, data: dict) -> None:
+        """Record when an inverter's AC side went online/offline."""
+        current_mode = data.get("mode")
+        last_mode = self._last_mode.get(inverter_id)
+        if current_mode is not None and last_mode is not None:
+            if last_mode == 0x0000 and current_mode == 0x0001:
+                # Wait -> Normal: AC came online
+                self._ac_online_time[inverter_id] = datetime.now(timezone.utc)
+                _LOGGER.info(
+                    "Inverter %s AC came online at %s",
+                    inverter_id,
+                    self._ac_online_time[inverter_id].isoformat(),
+                )
+            elif last_mode == 0x0001 and current_mode == 0x0000:
+                # Normal -> Wait: AC went offline
+                self._ac_offline_time[inverter_id] = datetime.now(timezone.utc)
+                _LOGGER.info(
+                    "Inverter %s AC went offline at %s",
+                    inverter_id,
+                    self._ac_offline_time[inverter_id].isoformat(),
+                )
+        if current_mode is not None:
+            self._last_mode[inverter_id] = current_mode
+
+        # Timestamp sensors expect datetime objects
+        if inverter_id in self._ac_online_time:
+            data["ac_online_time"] = self._ac_online_time[inverter_id]
+        if inverter_id in self._ac_offline_time:
+            data["ac_offline_time"] = self._ac_offline_time[inverter_id]
+
     async def _async_update_data(self) -> dict:
-        """Fetch data from PMU."""
+        """Fetch data for every inverter from the PMU."""
         try:
             data = await self.hass.async_add_executor_job(
-                self.pmu.connect_and_poll,
+                self.pmu.connect_and_poll_all,
                 False,  # set_time=False for normal polling
                 self.hass.config.time_zone,
             )
 
-            # Store inverter ID on first successful poll
-            if self.inverter_id is None:
-                self.inverter_id = data.get("inverter_id")
-                _LOGGER.debug("Inverter ID: %s", self.inverter_id)
+            self.inverter_ids = list(data)
+            _LOGGER.debug("Inverters reported by PMU: %s", self.inverter_ids)
 
             current_date = datetime.now().date()
 
@@ -132,28 +171,8 @@ class EversolarDataUpdateCoordinator(DataUpdateCoordinator):
             # Mark connection as active
             self._was_connected = True
 
-            # Track AC online/offline transitions
-            current_mode = data.get("mode")
-            if current_mode is not None and self._last_mode is not None:
-                if self._last_mode == 0x0000 and current_mode == 0x0001:
-                    # Wait → Normal: AC came online
-                    self._ac_online_time = datetime.now(timezone.utc)
-                    data["ac_online_time"] = self._ac_online_time.isoformat()
-                    _LOGGER.info("AC came online at %s", self._ac_online_time.isoformat())
-                elif self._last_mode == 0x0001 and current_mode == 0x0000:
-                    # Normal → Wait: AC went offline
-                    self._ac_offline_time = datetime.now(timezone.utc)
-                    data["ac_offline_time"] = self._ac_offline_time.isoformat()
-                    _LOGGER.info("AC went offline at %s", self._ac_offline_time.isoformat())
-
-            # Add timestamps to data if available
-            if self._ac_online_time:
-                data["ac_online_time"] = self._ac_online_time.isoformat()
-            if self._ac_offline_time:
-                data["ac_offline_time"] = self._ac_offline_time.isoformat()
-
-            # Update fully_down state tracking
-            self._is_fully_down = self.is_fully_down
+            for inverter_id, inverter in data.items():
+                self._track_ac_transitions(inverter_id, inverter)
 
             return data
         except Exception as err:

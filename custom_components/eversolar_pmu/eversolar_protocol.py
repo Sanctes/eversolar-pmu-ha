@@ -3,6 +3,7 @@
 # https://github.com/aburow/eversolar-pmu-ha
 
 """Eversolar PMU protocol implementation."""
+import logging
 import re
 import socket
 import struct
@@ -14,7 +15,13 @@ except ImportError:
     ZoneInfo = None
 
 
+_LOGGER = logging.getLogger(__name__)
+
 SYNC = b"\xAA\x55"
+
+# Upper bound on how many inverter indexes are probed on one PMU. The PMU ends
+# the list with an empty 0x12 frame, so this only guards against a runaway loop.
+MAX_INVERTERS = 16
 
 
 def crc16_xmodem(data: bytes) -> int:
@@ -153,6 +160,83 @@ def decode_normal_info_from_resp14(resp14: bytes, codes: list) -> dict:
     return vals
 
 
+def decode_inverter_values(vals: dict) -> dict:
+    """Turn the raw {code: u16} map from a 0x14 reply into scaled readings."""
+    power_w = vals.get(0x44)
+    vac_v = (vals.get(0x42) / 10.0) if (0x42 in vals) else None
+    fac_hz = (vals.get(0x43) / 100.0) if (0x43 in vals) else None
+    e_today_kwh = (vals.get(0x0D) / 100.0) if (0x0D in vals) else None
+    mode = vals.get(0x4C)
+
+    # PV-side telemetry
+    pv_v = None
+    for code in (0x01, 0x02, 0x40):
+        if code in vals:
+            raw = vals.get(code)
+            if raw not in (None, 0, 0xFFFF):
+                pv_v = raw / 10.0
+                break
+
+    pv_a = None
+    for code in (0x41, 0x04, 0x05, 0x46):
+        if code in vals:
+            raw = vals.get(code)
+            if raw not in (None, 0, 0xFFFF) and raw <= 2000:
+                pv_a = raw / 10.0
+                break
+
+    if pv_a is None and pv_v and power_w is not None and pv_v > 0:
+        pv_a = round(power_w / pv_v, 3)
+
+    pv_w_est = round(pv_v * pv_a, 1) if (pv_v is not None and pv_a is not None) else None
+
+    # Total energy
+    e_total_kwh = None
+    if (0x47 in vals) and (0x48 in vals):
+        e_total_kwh = round((vals[0x47] / 10.0) + (vals[0x48] * 6553.6), 1)
+
+    # Total operation hours
+    h_total_hours = None
+    if (0x49 in vals) and (0x4A in vals):
+        h_total_hours = vals[0x49] + (vals[0x4A] * 65536)
+
+    # Error flags (32-bit: low 16 bits in 0x4D, high 16 bits in 0x4E)
+    error_flags = None
+    if (0x4D in vals) and (0x4E in vals):
+        error_flags = vals[0x4D] + (vals[0x4E] << 16)
+
+    return {
+        "power_w": power_w,
+        "vac_v": vac_v,
+        "fac_hz": fac_hz,
+        "e_today_kwh": e_today_kwh,
+        "e_total_kwh": e_total_kwh,
+        "h_total_hours": h_total_hours,
+        "mode": mode,
+        "pv_v": pv_v,
+        "pv_a": pv_a,
+        "pv_w_est": pv_w_est,
+        "error_flags": error_flags,
+        "raw_u16": {f"0x{k:02x}": v for k, v in vals.items()},
+    }
+
+
+def parse_pmu_time(resp14: bytes) -> dict:
+    """Extract the PMU clock from a 0x14 reply."""
+    try:
+        payload14 = resp14[5:]
+        pmu_epoch = int.from_bytes(payload14[2:6], "little")
+        pmu_dt_utc = datetime.fromtimestamp(pmu_epoch, tz=timezone.utc)
+        time_delta = int((pmu_dt_utc - datetime.now(timezone.utc)).total_seconds())
+        return {
+            "pmu_time_utc": pmu_dt_utc.isoformat(),
+            "time_delta": time_delta,
+            "pmu_epoch": pmu_epoch,
+        }
+    except Exception:
+        return {"pmu_time_utc": None, "time_delta": None, "pmu_epoch": None}
+
+
 class EversolarPMU:
     """Eversolar PMU protocol implementation."""
 
@@ -161,7 +245,8 @@ class EversolarPMU:
         self.host = host
         self.port = port
         self.timeout = timeout
-        self._inverter_id = None
+        self._inverter_id = None  # first inverter seen (kept for compatibility)
+        self._inverter_ids: list = []
         self._codes = None
 
     @staticmethod
@@ -182,8 +267,62 @@ class EversolarPMU:
         except Exception:
             return False
 
-    def connect_and_poll(self, set_time: bool = False, tz_name: str = "Australia/Brisbane") -> dict:
-        """Connect, initialize, and poll data from PMU."""
+    def _txrx(self, s: socket.socket, cmd: int, payload: bytes = b"") -> bytes:
+        """Send one request frame and return the reply frame."""
+        s.sendall(build_req(cmd, payload))
+        return recv_frame(s, timeout_s=self.timeout)
+
+    def _discover(self, s: socket.socket) -> list:
+        """Walk the 0x11 inverter indexes; return [(index, inverter_id, codes)].
+
+        The byte after 0x11 selects an inverter: index 0 is the first, 1 the
+        second, and so on. The PMU ends the list with a 0x12 frame that has no
+        ID in it.
+        """
+        found: list = []
+        for idx in range(MAX_INVERTERS):
+            try:
+                resp12 = self._txrx(s, 0x11, bytes([idx]))
+                if resp12[2] != 0x12:
+                    raise RuntimeError(f"unexpected reply 0x{resp12[2]:02x}")
+                inverter_id = parse_inverter_id(resp12)
+            except (RuntimeError, OSError):
+                if idx == 0:
+                    raise  # nothing reported at all (e.g. inverters asleep)
+                break  # end of list
+            if any(inverter_id == known for _, known, _ in found):
+                break
+            codes = parse_code_list_from_resp12(resp12)
+            found.append((idx, inverter_id, codes))
+            self._txrx(s, 0x73)  # keepalive
+        return found
+
+    def _query_values(self, s: socket.socket, idx: int, inverter_id: str, codes: list):
+        """Return (resp14, raw values) for one inverter.
+
+        Tries keepalive + 0x13 first. If the PMU answers with something that is
+        not a usable 0x14 frame, re-select the inverter with 0x11 and retry once.
+        """
+        for reselect in (False, True):
+            if reselect:
+                self._txrx(s, 0x11, bytes([idx]))
+            self._txrx(s, 0x73)
+            resp14 = self._txrx(s, 0x13, inverter_id.encode("ascii"))
+            if resp14[2] == 0x14:
+                try:
+                    return resp14, decode_normal_info_from_resp14(resp14, codes)
+                except RuntimeError:
+                    pass
+        raise RuntimeError(f"No usable 0x14 reply for inverter {inverter_id}")
+
+    def connect_and_poll_all(
+        self, set_time: bool = False, tz_name: str = "Australia/Brisbane"
+    ) -> dict:
+        """Connect once and poll every inverter behind the PMU.
+
+        Returns {inverter_id: data}, where each data dict has the same keys that
+        connect_and_poll() always returned.
+        """
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(self.timeout)
 
@@ -195,121 +334,38 @@ class EversolarPMU:
                 now_local = datetime.now(ZoneInfo(tz_name))
             else:
                 now_local = datetime.now()
+            self._txrx(s, 0x01, build_init_payload(now_local))
 
-            s.sendall(build_req(0x01, build_init_payload(now_local)))
-            recv_frame(s, timeout_s=self.timeout)
+            # 2) 0x11 <index> -> 0x12 (inverter id + code list), one per inverter
+            inverters = self._discover(s)
 
-            # 2) 0x11 0x00 -> 0x12 (contains inverter id + code list)
-            s.sendall(build_req(0x11, b"\x00"))
-            resp12_long = recv_frame(s, timeout_s=self.timeout)
-            inverter_id = parse_inverter_id(resp12_long)
-            codes = parse_code_list_from_resp12(resp12_long)
+            # 3) 0x13 <inverter id> -> 0x14 values, per inverter
+            results: dict = {}
+            for idx, inverter_id, codes in inverters:
+                try:
+                    resp14, vals = self._query_values(s, idx, inverter_id, codes)
+                except RuntimeError as err:
+                    _LOGGER.warning("Skipping inverter %s: %s", inverter_id, err)
+                    continue
+                data = {"inverter_id": inverter_id}
+                data.update(decode_inverter_values(vals))
+                data.update(parse_pmu_time(resp14))
+                results[inverter_id] = data
 
-            # Store for later use
-            self._inverter_id = inverter_id
-            self._codes = codes
+            if not results:
+                raise RuntimeError("PMU returned no usable inverter data")
 
-            # 3) keepalive 0x73 -> 0x74
-            s.sendall(build_req(0x73, b""))
-            recv_frame(s, timeout_s=self.timeout)
-
-            # 4) 0x11 0x01 -> 0x12 short (compatibility)
-            s.sendall(build_req(0x11, b"\x01"))
-            recv_frame(s, timeout_s=self.timeout)
-
-            # 5) keepalive again
-            s.sendall(build_req(0x73, b""))
-            recv_frame(s, timeout_s=self.timeout)
-
-            # 6) 0x13 inverter_id -> 0x14 values
-            s.sendall(build_req(0x13, inverter_id.encode("ascii")))
-            resp14 = recv_frame(s, timeout_s=self.timeout)
-
-            # Parse PMU time
-            pmu_epoch = None
-            pmu_time_utc = None
-            time_delta = None
-
-            try:
-                payload14 = resp14[5:]
-                pmu_epoch = int.from_bytes(payload14[2:6], "little")
-                pmu_dt_utc = datetime.fromtimestamp(pmu_epoch, tz=timezone.utc)
-                pmu_time_utc = pmu_dt_utc.isoformat()
-
-                host_dt_utc = datetime.now(timezone.utc)
-                time_delta = int((pmu_dt_utc - host_dt_utc).total_seconds())
-            except Exception:
-                pmu_epoch = None
-                pmu_time_utc = None
-                time_delta = None
-
-            # Decode values
-            vals = decode_normal_info_from_resp14(resp14, codes)
-
-            # Parse and scale values
-            power_w = vals.get(0x44)
-            vac_v = (vals.get(0x42) / 10.0) if (0x42 in vals) else None
-            fac_hz = (vals.get(0x43) / 100.0) if (0x43 in vals) else None
-            e_today_kwh = (vals.get(0x0D) / 100.0) if (0x0D in vals) else None
-            mode = vals.get(0x4C)
-
-            # PV-side telemetry
-            pv_v = None
-            for code in (0x01, 0x02, 0x40):
-                if code in vals:
-                    raw = vals.get(code)
-                    if raw not in (None, 0, 0xFFFF):
-                        pv_v = raw / 10.0
-                        break
-
-            pv_a = None
-            for code in (0x41, 0x04, 0x05, 0x46):
-                if code in vals:
-                    raw = vals.get(code)
-                    if raw not in (None, 0, 0xFFFF) and raw <= 2000:
-                        pv_a = raw / 10.0
-                        break
-
-            if pv_a is None and pv_v and power_w is not None and pv_v > 0:
-                pv_a = round(power_w / pv_v, 3)
-
-            pv_w_est = round(pv_v * pv_a, 1) if (pv_v is not None and pv_a is not None) else None
-
-            # Total energy
-            e_total_kwh = None
-            if (0x47 in vals) and (0x48 in vals):
-                e_total_kwh = round((vals[0x47] / 10.0) + (vals[0x48] * 6553.6), 1)
-
-            # Total operation hours
-            h_total_hours = None
-            if (0x49 in vals) and (0x4A in vals):
-                h_total_hours = vals[0x49] + (vals[0x4A] * 65536)
-
-            # Error flags (32-bit: low 16 bits in 0x4D, high 16 bits in 0x4E)
-            error_flags = None
-            if (0x4D in vals) and (0x4E in vals):
-                error_flags = vals[0x4D] + (vals[0x4E] << 16)
-
-            return {
-                "inverter_id": inverter_id,
-                "power_w": power_w,
-                "vac_v": vac_v,
-                "fac_hz": fac_hz,
-                "e_today_kwh": e_today_kwh,
-                "e_total_kwh": e_total_kwh,
-                "h_total_hours": h_total_hours,
-                "mode": mode,
-                "pv_v": pv_v,
-                "pv_a": pv_a,
-                "pv_w_est": pv_w_est,
-                "error_flags": error_flags,
-                "pmu_time_utc": pmu_time_utc,
-                "time_delta": time_delta,
-                "pmu_epoch": pmu_epoch,
-                "raw_u16": {f"0x{k:02x}": v for k, v in vals.items()},
-            }
+            self._inverter_ids = list(results)
+            self._inverter_id = self._inverter_ids[0]
+            self._codes = inverters[0][2]
+            return results
         finally:
             s.close()
+
+    def connect_and_poll(self, set_time: bool = False, tz_name: str = "Australia/Brisbane") -> dict:
+        """Poll the PMU and return the first inverter's data (single-inverter API)."""
+        results = self.connect_and_poll_all(set_time=set_time, tz_name=tz_name)
+        return next(iter(results.values()))
 
     def sync_time(self, tz_name: str = "Australia/Brisbane") -> bool:
         """Sync PMU time to host time."""
