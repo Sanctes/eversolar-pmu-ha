@@ -178,7 +178,7 @@ def decode_inverter_values(vals: dict) -> dict:
                 break
 
     pv_a = None
-    for code in (0x41, 0x04, 0x05, 0x46):
+    for code in (0x04, 0x05, 0x46):
         if code in vals:
             raw = vals.get(code)
             if raw not in (None, 0, 0xFFFF) and raw <= 2000:
