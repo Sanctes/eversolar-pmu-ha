@@ -316,7 +316,7 @@ class EversolarPMU:
         raise RuntimeError(f"No usable 0x14 reply for inverter {inverter_id}")
 
     def connect_and_poll_all(
-        self, set_time: bool = False, tz_name: str = "Australia/Brisbane"
+        self, set_time: bool = False, tz_name: str = "Europe/Copenhagen"
     ) -> dict:
         """Connect once and poll every inverter behind the PMU.
 
@@ -362,12 +362,12 @@ class EversolarPMU:
         finally:
             s.close()
 
-    def connect_and_poll(self, set_time: bool = False, tz_name: str = "Australia/Brisbane") -> dict:
+    def connect_and_poll(self, set_time: bool = False, tz_name: str = "Europe/Copenhagen") -> dict:
         """Poll the PMU and return the first inverter's data (single-inverter API)."""
         results = self.connect_and_poll_all(set_time=set_time, tz_name=tz_name)
         return next(iter(results.values()))
 
-    def sync_time(self, tz_name: str = "Australia/Brisbane") -> bool:
+    def sync_time(self, tz_name: str = "Europe/Copenhagen") -> bool:
         """Sync PMU time to host time."""
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
