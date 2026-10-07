@@ -99,7 +99,7 @@ Core telemetry:
 | Power | W | measurement | AC power output |
 | AC Voltage | V | measurement | AC output voltage |
 | AC Frequency | Hz | measurement | Grid frequency |
-| Energy Today | kWh | total | Daily energy |
+| Energy Today | kWh | total_increasing | Daily energy |
 | Total Energy | kWh | total_increasing | Lifetime energy |
 | Total Operation Hours | h | total_increasing | Lifetime run hours |
 | PV Voltage | V | measurement | PV string voltage |
