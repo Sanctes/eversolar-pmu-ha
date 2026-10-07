@@ -185,7 +185,7 @@ def decode_inverter_values(vals: dict) -> dict:
                 pv_a = raw / 10.0
                 break
 
-    if pv_a is None and pv_v and power_w is not None and pv_v > 0:
+    if pv_a is None and pv_v and power_w is not None and pv_v > 100:
         pv_a = round(power_w / pv_v, 3)
 
     pv_w_est = round(pv_v * pv_a, 1) if (pv_v is not None and pv_a is not None) else None
