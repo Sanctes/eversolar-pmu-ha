@@ -170,7 +170,7 @@ def decode_inverter_values(vals: dict) -> dict:
 
     # PV-side telemetry
     pv_v = None
-    for code in (0x40, 0x01, 0x02):
+    for code in (0x40): #, 0x01, 0x02):
         if code in vals:
             raw = vals.get(code)
             if raw not in (None, 0, 0xFFFF):
@@ -178,7 +178,7 @@ def decode_inverter_values(vals: dict) -> dict:
                 break
 
     pv_a = None
-    for code in (0x46, 0x04, 0x05):
+    for code in (0x46): #, 0x04, 0x05):
         if code in vals:
             raw = vals.get(code)
             if raw not in (None, 0, 0xFFFF) and raw <= 2000:
