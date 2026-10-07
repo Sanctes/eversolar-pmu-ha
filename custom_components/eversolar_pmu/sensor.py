@@ -52,7 +52,7 @@ def _inverter_entities(coordinator: EversolarDataUpdateCoordinator, inverter_id:
         EversolarSensor(c, i, SENSOR_FREQUENCY, "AC Frequency", "fac_hz",
                         SensorDeviceClass.FREQUENCY, "Hz", SensorStateClass.MEASUREMENT),
         EversolarSensor(c, i, SENSOR_ENERGY_TODAY, "Energy Today", "e_today_kwh",
-                        SensorDeviceClass.ENERGY, "kWh", SensorStateClass.TOTAL),
+                        SensorDeviceClass.ENERGY, "kWh", SensorStateClass.TOTAL_INCREASING),
         EversolarSensor(c, i, SENSOR_ENERGY_TOTAL, "Total Energy", "e_total_kwh",
                         SensorDeviceClass.ENERGY, "kWh", SensorStateClass.TOTAL_INCREASING),
         EversolarSensor(c, i, SENSOR_HOURS_TOTAL, "Total Operation Hours", "h_total_hours",
