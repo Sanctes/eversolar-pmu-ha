@@ -169,21 +169,23 @@ def decode_inverter_values(vals: dict) -> dict:
     mode = vals.get(0x4C)
 
     # PV-side telemetry
-    pv_v = None
-    for code in (0x40): #, 0x01, 0x02):
-        if code in vals:
-            raw = vals.get(code)
-            if raw not in (None, 0, 0xFFFF):
-                pv_v = raw / 10.0
-                break
+#    pv_v = None
+#    for code in (0x40): #, 0x01, 0x02):
+#        if code in vals:
+#            raw = vals.get(code)
+#            if raw not in (None, 0, 0xFFFF):
+#                pv_v = raw / 10.0
+#                break
+    pv_v = (vals.get(0x40) /10.0) if (0x40 in vals) else None
 
-    pv_a = None
-    for code in (0x46): #, 0x04, 0x05):
-        if code in vals:
-            raw = vals.get(code)
-            if raw not in (None, 0, 0xFFFF) and raw <= 2000:
-                pv_a = raw / 10.0
-                break
+#    pv_a = None
+#    for code in (0x46): #, 0x04, 0x05):
+#        if code in vals:
+#            raw = vals.get(code)
+#            if raw not in (None, 0, 0xFFFF) and raw <= 2000:
+#                pv_a = raw / 10.0
+#                break
+    pv_a = (vals.get(0x46) /10.0) if (0x46 in vals) else None
 
     if pv_a is None and pv_v and power_w is not None and pv_v > 0:
         pv_a = round(power_w / pv_v, 3)
