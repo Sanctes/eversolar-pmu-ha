@@ -131,11 +131,11 @@ class EversolarOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_PV_VOLTAGE_THRESHOLD,
                     default=self.config_entry.options.get(CONF_PV_VOLTAGE_THRESHOLD, self.config_entry.data.get(CONF_PV_VOLTAGE_THRESHOLD, 50)),
-                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=200)),
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=200)),
                 vol.Optional(
                     CONF_PV_VOLTAGE_STATS_CUTOFF,
                     default=self.config_entry.options.get(CONF_PV_VOLTAGE_STATS_CUTOFF, self.config_entry.data.get(CONF_PV_VOLTAGE_STATS_CUTOFF, 20)),
-                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=200)),
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=200)),
             }
         )
 
