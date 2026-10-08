@@ -186,6 +186,10 @@ def decode_inverter_values(vals: dict) -> dict:
                 pv_a = raw / 10.0
                 break
 
+    if mode == 0:
+        pv_v = 0
+        pv_a = 0
+    
     if pv_a is None and pv_v and power_w is not None and pv_v > 0:
         pv_a = round(power_w / pv_v, 3)
 
