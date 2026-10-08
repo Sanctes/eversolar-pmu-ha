@@ -165,27 +165,26 @@ def decode_inverter_values(vals: dict) -> dict:
     power_w = vals.get(0x44)
     vac_v = (vals.get(0x42) / 10.0) if (0x42 in vals) else None
     fac_hz = (vals.get(0x43) / 100.0) if (0x43 in vals) else None
-    e_today_kwh = (vals.get(0x0D) / 100.0) if (0x0D in vals) else None
+    e_today_kwh = (vals.get(0x79) / 100.0) if (0x79 in vals) else None
     mode = vals.get(0x4C)
 
     # PV-side telemetry
-#    pv_v = None
-#    for code in (0x40): #, 0x01, 0x02):
-#        if code in vals:
-#            raw = vals.get(code)
-#            if raw not in (None, 0, 0xFFFF):
-#                pv_v = raw / 10.0
-#                break
-    pv_v = (vals.get(0x40) /10.0) if (0x40 in vals) else 0.0
+    pv_v = None
+    for code in (0x02, 0x04, 0x40): #, 0x01, 0x02):
+        if code in vals:
+            raw = vals.get(code)
+            if raw not in (None, 0, 0xFFFF):
+                pv_v = raw / 10.0
+                break
 
-#    pv_a = None
-#    for code in (0x46): #, 0x04, 0x05):
-#        if code in vals:
-#            raw = vals.get(code)
-#            if raw not in (None, 0, 0xFFFF) and raw <= 2000:
-#                pv_a = raw / 10.0
-#                break
-    pv_a = (vals.get(0x46) /10.0) if (0x46 in vals) else 0.0
+
+    pv_a = None
+    for code in (0x7b, 0x7d, 0x46): #, 0x04, 0x05):
+        if code in vals:
+            raw = vals.get(code)
+            if raw not in (None, 0, 0xFFFF) and raw <= 2000:
+                pv_a = raw / 10.0
+                break
 
     if pv_a is None and pv_v and power_w is not None and pv_v > 0:
         pv_a = round(power_w / pv_v, 3)
