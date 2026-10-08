@@ -51,7 +51,7 @@ class EversolarPVVoltageStatsCutoffNumber(EversolarEntity, NumberEntity):
 
     _attr_name = "PV Voltage Stats Cutoff"
     _attr_mode = NumberMode.BOX
-    _attr_native_min_value = 1
+    _attr_native_min_value = 0
     _attr_native_max_value = 200
     _attr_native_step = 1
     _attr_native_unit_of_measurement = "V"
