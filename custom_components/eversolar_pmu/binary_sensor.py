@@ -65,7 +65,7 @@ class EversolarACDCOfflineSensor(EversolarEntity, BinarySensorEntity):
     @property
     def is_on(self) -> Optional[bool]:
         """Return True if DC is online (inverter not fully down)."""
-        return not self.coordinator.is_fully_down(self._inverter_id) AND not self.coordinator.inverter_data(inverter_id).get("mode") == 0
+        return not self.coordinator.is_fully_down(self._inverter_id) and not self.coordinator.inverter_data(self._inverter_id).get("mode") == 0
 
 
 class EversolarTimeSyncSensor(EversolarEntity, BinarySensorEntity):
