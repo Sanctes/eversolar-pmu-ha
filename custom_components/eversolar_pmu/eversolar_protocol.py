@@ -187,8 +187,8 @@ def decode_inverter_values(vals: dict) -> dict:
                 break
 
     if mode == 0:
-        pv_v = 0
-        pv_a = 0
+        pv_v = 5
+        pv_a = 5
     
     if pv_a is None and pv_v and power_w is not None and pv_v > 0:
         pv_a = round(power_w / pv_v, 3)
