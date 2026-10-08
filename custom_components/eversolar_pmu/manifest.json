@@ -1,12 +1,12 @@
 {
   "domain": "eversolar_pmu",
   "name": "Eversolar PMU",
-  "codeowners": ["@aburow"],
+  "codeowners": ["@aburow/Sanctes"],
   "config_flow": true,
-  "documentation": "https://github.com/aburow/eversolar-pmu-ha",
+  "documentation": "https://github.com/sanctes/eversolar-pmu-ha",
   "integration_type": "device",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/aburow/eversolar-pmu-ha/issues",
+  "issue_tracker": "https://github.com/sanctes/eversolar-pmu-ha/issues",
   "requirements": [],
   "version": "1.2.1"
 }
