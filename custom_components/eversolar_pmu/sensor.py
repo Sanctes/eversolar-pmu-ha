@@ -121,7 +121,6 @@ class EversolarSensor(EversolarEntity, SensorEntity):
     def available(self) -> bool:
         """Return if entity is available."""
         # Coordinator unavailable, or this inverter not reported by the PMU
-        return super().available:
         if not super().available:
             return False
 
