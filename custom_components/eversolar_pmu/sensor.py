@@ -313,7 +313,7 @@ class EversolarDailyEfficiencySensor(EversolarEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return super().available
+       # return super().available
         if not super().available:
             return False
         # Available only if both energy and power data exist
