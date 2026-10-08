@@ -66,9 +66,11 @@ class EversolarDataUpdateCoordinator(DataUpdateCoordinator):
             update_interval=update_interval,
         )
 
-    def _get_config(self, key: str, default=None):
-        """Get config value from options first, then data, then default."""
-        return self.config_entry.options.get(key) or self.config_entry.data.get(key, default)
+    def _get_config(self, key, default=None):
+        opts = self.config_entry.options
+        if key in opts:
+            return opts[key]
+        return self.config_entry.data.get(key, default)
 
     def inverter_data(self, inverter_id: str) -> dict | None:
         """Return the latest readings for one inverter, if it was reported."""
@@ -76,24 +78,23 @@ class EversolarDataUpdateCoordinator(DataUpdateCoordinator):
             return None
         return self.data.get(inverter_id)
 
-    def is_fully_down(self, inverter_id: str) -> bool:
-        """Check if an inverter is fully down (Wait mode + low PV voltage)."""
+    def is_fully_down(self, inverter_id):
         data = self.inverter_data(inverter_id)
         if not data:
             return False
-        mode = data.get("mode")
-        pv_voltage = data.get("pv_v", 0) or 0
         threshold = self._get_config(CONF_PV_VOLTAGE_THRESHOLD, 50)
-        return mode == 0x0000 and pv_voltage < threshold
+        if not threshold:          # 0 = disabled
+            return False
+        return data.get("mode") == 0 and (data.get("pv_v") or 0) < threshold
 
-    def is_below_stats_cutoff(self, inverter_id: str) -> bool:
-        """Check if an inverter's PV voltage is below the stats cutoff."""
+    def is_below_stats_cutoff(self, inverter_id):
         data = self.inverter_data(inverter_id)
         if not data:
             return False
-        pv_voltage = data.get("pv_v", 0) or 0
-        stats_cutoff = self._get_config(CONF_PV_VOLTAGE_STATS_CUTOFF, 20)
-        return pv_voltage < stats_cutoff
+        cutoff = self._get_config(CONF_PV_VOLTAGE_STATS_CUTOFF, 20)
+        if not cutoff:             # 0 = disabled
+            return False
+        return (data.get("pv_v") or 0) < cutoff
 
     @property
     def time_sync_success(self) -> bool:
